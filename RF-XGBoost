@@ -1,0 +1,705 @@
+%matplotlib inline
+import numpy as np
+from tensorflow import keras
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from tensorflow.keras.layers import *
+from tensorflow.keras.optimizers import SGD, Adam
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.utils import to_categorical
+
+import numpy as np
+import pandas as pd
+import os
+import matplotlib.pyplot as plt
+%matplotlib inline
+
+from datetime import timedelta, date
+
+
+import matplotlib as mpl
+from matplotlib.ticker import MultipleLocator,FormatStrFormatter,MaxNLocator
+
+#Call in all data from local finals I downloaded
+os.chdir(r"C:\Users\markg\OneDrive\Desktop\Columbia Graduate Work\Machine Learning\Energy Price Files")
+path = r"C:\Users\markg\OneDrive\Desktop\Columbia Graduate Work\Machine Learning\Energy Price Files"
+
+data_3d = []
+with os.scandir(path) as dirs:
+    for file in dirs:
+        if str(file)[-6:-2] == '.csv':
+            try:
+                energy_df = pd.read_csv(os.path.abspath(file.name))
+                col_list = []
+                for col in energy_df.columns:
+                    col_list.append(col)
+                energy_price_data = energy_df[['Price Hub', 'Trade Date', col_list[6]]]
+                energy_price_data.columns = ['Price Hub', 'Date', 'Real Price']
+                data_3d.append(energy_price_data)
+            except ValueError:
+                print('Error with:')
+                print(file)
+                continue
+        else:
+            continue
+
+
+#Calls in data from 2014 to 2022
+energy_2014df = pd.read_csv(r'C:\Users\markg\OneDrive\Desktop\Columbia Graduate Work\Machine Learning\Energy Prices by ISO from 2014 - csv.csv',
+                           header = [0])
+energy_2014price_data = energy_2014df[['Price hub', 'Trade date', 'Real price']].drop_duplicates()
+energy_2014price_data.columns = ['Price Hub', 'Date', 'Real Price']
+
+#Converts all similar peak names to a uniform name
+name_list = energy_2014price_data['Price Hub'].drop_duplicates()
+name_list = name_list.reset_index(drop=True)
+
+for i in range(7):
+    energy_2014price_data['Price Hub'] = energy_2014price_data['Price Hub'].apply(lambda x: name_list[0+i] if x == name_list[8+i] else x)
+
+name_list = energy_2014price_data['Price Hub'].drop_duplicates()
+name_list = name_list.reset_index(drop=True)
+
+#Adjust names so that they are uniform
+fixed_name_list = ['Indiana Hub RT Peak', 'Nepool MH DA LMP Peak', 'Mid C Peak', 'NP15 EZ Gen DA LMP Peak', 'Palo Verde Peak',
+                  'PJM WH Real Time Peak', 'SP15 EZ Gen DA LMP Peak', 'ERCOT North 345KV Peak']
+for i in range(len(data_3d)):
+    data_3d[i]['Price Hub'] = data_3d[i]['Price Hub'].apply(lambda x: fixed_name_list[i])
+    
+ 
+
+#Convert names of dates so that everything is unform
+#Check the names of each month
+def month_check(date):
+    if '-' in date:
+        date_list = date.split('-')
+        return date_list[1]
+    
+month_list = data_3d[0]['Date'].apply(month_check).drop_duplicates().reset_index(drop=True)[0:12]
+
+#Create a map to restructure names
+month_map = {}
+for i in range(len(month_list)):
+    key = month_list[i]
+    value = i+1
+    month_map[key] = value
+
+#Make sure all the day-month-year formatted dates are converted to month/day/year
+def date_convert(date, month_mapper):
+    month = []
+    if '-' in date:
+        date_list = date.split('-')
+        day = date_list[0]
+        month = str(month_mapper[date_list[1]])
+        year = date_list[2]
+        new_date = month + '/' + day + '/20' + year
+        return new_date
+    
+    elif date[0] == '0' or date[3] == '0':
+        new_date = date[0:6] + '20' + date[6:8]
+        
+        if new_date[3] == '0':
+            new_date = new_date[0:3] + new_date[4:]
+        if new_date[0] == '0':
+            new_date = new_date[1:]
+        
+        return new_date
+    
+    elif date[0:2] == '11' or date[0:2] == '12':
+        new_date = date[0:6] + '20' + date[6:8]
+        
+        return new_date
+    
+    else:
+        return date
+
+for i in range(len(data_3d)):
+    data_3d[i]['Date'] = data_3d[i]['Date'].apply(lambda x: date_convert(x, month_map))
+    
+
+start_date = {'Date':['1/1/01']}
+end_date = {'Date':['12/31/22']}
+
+start_date_df = pd.DataFrame(start_date)
+check_date = pd.DataFrame(end_date)
+
+date_list = [pd.to_datetime(start_date_df['Date'])[0]]
+
+while date_list[-1] != pd.to_datetime(check_date['Date'])[0]:
+    next_date = date_list[-1] + timedelta(days=1)
+    date_list.append(next_date)
+
+from datetime import datetime
+
+def date_formatting(date):
+    new_date = str(date)[0:10]
+    if '-' in new_date:
+        new_date.split('-')
+        day = new_date[8:10]
+        if day[0] == '0':
+            day = day[1]
+        month = new_date[5:7]
+        if month[0] == '0':
+            month = month[1]
+        year = new_date[2:4]
+
+        updated_date = month + '/' + day + '/20' + year
+        return updated_date
+
+#Create full date dict so that we can make sure data is filled in from the beginning of 2001
+date_dict = {'Date': date_list}
+full_date_df = pd.DataFrame(date_dict)
+full_date_df['Date'] = full_date_df['Date'].apply(date_formatting)
+
+
+#Fill in price data
+price_data_3d = []
+for i in range(len(data_3d)):
+    data_2014 = energy_2014price_data[energy_2014price_data['Price Hub'] == data_3d[i]['Price Hub'][0]].reset_index(drop=True)
+    combined_data = pd.concat([data_3d[i], data_2014]).reset_index(drop=True)
+    price_data_3d.append(combined_data)
+    
+all_price_3d = []
+for i in range(len(price_data_3d)):
+    temp_df = full_date_df.merge(price_data_3d[i], on='Date', how='left')
+    all_price_3d.append(temp_df)
+
+
+
+#Beginning of generation data
+monthly_df = pd.read_csv(r'C:\Users\markg\OneDrive\Desktop\Columbia Graduate Work\Machine Learning\Average_retail_price_of_electricity_all_sectors_monthly.csv')
+state_to_code = pd.read_csv(r'C:\Users\markg\OneDrive\Desktop\Columbia Graduate Work\Machine Learning\State to State Code.csv')
+code_to_iso = pd.read_csv(r'C:\Users\markg\OneDrive\Desktop\Columbia Graduate Work\Machine Learning\State Conversions.csv')
+energy_df = pd.read_csv(r'C:\Users\markg\OneDrive\Desktop\Columbia Graduate Work\Machine Learning\Net_generation_all_fuels_(utility-scale)_all_sectors_monthly.csv')         
+
+#Creating mapping for codes to state
+state_to_code_dict = {}
+
+for i in range(len(state_to_code['State'])):
+    key = state_to_code['State'][i]
+    value = state_to_code['State Code'][i]
+    state_to_code_dict[key] = value
+    
+#Create mapping for codes to iso
+code_to_iso_dict = {}
+for column in code_to_iso.columns:
+    code_list = list(code_to_iso[column].dropna())
+    code_to_iso_dict[column] = code_list
+
+#Finding which price columns belong to which ISO
+state_to_iso_dict = {'Nepool MH DA LMP Peak': [],
+                     'PJM WH Real Time Peak': [],
+                     'Indiana Hub RT Peak': [],
+                     'ERCOT North 345KV Peak': [],
+                     'Palo Verde Peak': [],
+                     'Mid C Peak': [],
+                     'SP15 EZ Gen DA LMP Peak': []}
+
+for i in np.arange(2, len(monthly_df.columns)):
+    if monthly_df.columns[i].split(' ')[0] != 'District':
+        state = monthly_df.columns[i].split(' ')[0]
+    if state in ['New', 'North', 'South', 'West', 'Rhode']:
+        state = state + ' ' + monthly_df.columns[i].split(' ')[1]
+    
+    code = state_to_code_dict[state]
+
+    for key in code_to_iso_dict.keys():
+        if code in code_to_iso_dict[key]:
+            state_to_iso_dict[key].append(monthly_df.columns[i])
+
+state_to_iso_dict_energy = {'Nepool MH DA LMP Peak': [],
+                         'PJM WH Real Time Peak': [],
+                         'Indiana Hub RT Peak': [],
+                         'ERCOT North 345KV Peak': [],
+                         'Palo Verde Peak': [],
+                         'Mid C Peak': [],
+                         'SP15 EZ Gen DA LMP Peak': []}
+
+for i in np.arange(2,len(energy_df.columns)):
+    if energy_df.columns[i].split(' ')[0] != 'District':
+        state = energy_df.columns[i].split(' ')[0]
+    if state in ['New', 'North', 'South', 'West', 'Rhode']:
+        state = state + ' ' + energy_df.columns[i].split(' ')[1]
+    
+    code = state_to_code_dict[state]
+
+    for key in code_to_iso_dict.keys():
+        if code in code_to_iso_dict[key]:
+            state_to_iso_dict_energy[key].append(energy_df.columns[i])
+            
+#Creating 3d df of generation data from each ISO
+region_energy_3d = []
+for key in state_to_iso_dict_energy.keys():
+    new_df = energy_df[state_to_iso_dict_energy[key]]
+    region_energy_3d.append(new_df)
+   
+ratio_3d_df = []
+for i in range(len(region_energy_3d)):
+    region_energy_3d[i]['Total Monthly Energy'] = region_energy_3d[i].sum(axis=1)
+    
+    for column in region_energy_3d[i].columns:
+        region_energy_3d[i][column] = region_energy_3d[i][column]/region_energy_3d[i]['Total Monthly Energy']
+    ratio_3d_df.append(region_energy_3d[i])
+
+for j in range(len(ratio_3d_df)):
+    ratio_3d_df[j] = ratio_3d_df[j].drop('Total Monthly Energy', axis=1)
+
+region_price_3d = []
+for key in state_to_iso_dict.keys():
+    new_df = monthly_df[state_to_iso_dict[key]]
+    region_price_3d.append(new_df)
+
+region_price_3d[1] = region_price_3d[1].drop('District Of Columbia cents per kilowatthour', axis=1)
+#Making uniform column names so that the matricies could be multiplied
+name_list_3d = []
+for i in range(len(ratio_3d_df)):
+    temp_list = []
+    for name in ratio_3d_df[i].columns:
+        if name.split(' ')[0] in ['New', 'North', 'South', 'West', 'Rhode']:
+            new_name = name.split(' ')[0] + ' ' + name.split(' ')[1]
+            temp_list.append(new_name)
+        else:
+            new_name = name.split(' ')[0]
+            temp_list.append(new_name)
+    name_list_3d.append(temp_list)
+
+
+for i in range(len(ratio_3d_df)):
+    ratio_3d_df[i].columns = name_list_3d[i]
+    region_price_3d[i].columns = name_list_3d[i]
+    
+    
+#Make sure to normalize the energy production to have it as a percent of total
+weighted_3d_df = []
+for i in range(len(ratio_3d_df)):
+    weighted_3d_df.append(region_price_3d[i].mul(ratio_3d_df[i]))
+final_weighted_3d_df = []
+weighted_df_name_list =  ['Nepool MH DA LMP Peak',
+                         'PJM WH Real Time Peak',
+                         'Indiana Hub RT Peak',
+                         'ERCOT North 345KV Peak',
+                         'Palo Verde Peak',
+                         'Mid C Peak',
+                         'SP15 EZ Gen DA LMP Peak']
+for i in range(len(weighted_3d_df)):
+    weighted_3d_df[i]['Real Price'] = weighted_3d_df[i].sum(axis=1)
+    weighted_3d_df[i]['Month'] = monthly_df['Month']
+    weighted_3d_df[i]['Price Hub'] = weighted_df_name_list[i] * len(weighted_3d_df[i]['Real Price'])
+    final_weighted_3d_df.append(weighted_3d_df[i][['Month', 'Price Hub', 'Real Price']])
+    
+#Uniform dates
+def month_converter(date):
+    
+    new_date = month_map[date[0:3]]
+    month =  str(new_date)
+    year = date[-2:]
+    new_date = month +  '/1/20' + year
+
+    return new_date
+
+for i in range(len(final_weighted_3d_df)):
+    final_weighted_3d_df[i]['Date'] = final_weighted_3d_df[i]['Month'].apply(month_converter)
+
+
+
+#Merge price data with monthly averages and daily missing data
+all_monthly_price_3d = []
+for i in range(len(final_weighted_3d_df)):
+    temp_df = full_date_df.merge(final_weighted_3d_df[i], on='Date', how='left').drop('Month', axis=1)
+    all_monthly_price_3d.append(temp_df.fillna(method='ffill'))
+    
+
+all_region_price_data = []
+
+for i in range(len(all_monthly_price_3d)):
+    all_region_price_data.append(all_price_3d[i].fillna(all_monthly_price_3d[i]).dropna())
+
+
+import openpyxl
+#New monthly generation data
+generation_type_df = pd.read_csv(r'C:\Users\markg\OneDrive\Desktop\Columbia Graduate Work\Machine Learning\US state level Power gens.csv')
+generation_type_monthly_df = pd.read_excel(r'C:\Users\markg\OneDrive\Desktop\Columbia Graduate Work\Machine Learning\generation_monthly_by_sector.xlsx', sheet_name = None)
+del generation_type_monthly_df['EnergySource_Notes']
+
+generation_type_df['year'] = generation_type_df['year'].apply(lambda x:int(x))
+generation_type_df['week'] = generation_type_df['week'].apply(lambda x:int(x))
+generation_type_df['day'] = generation_type_df['day'].apply(lambda x:int(x))
+
+year_list = generation_type_df['year']
+day_list = generation_type_df['day']
+
+month_list = []
+month = 12
+for i in range(len(day_list)):
+    try:
+        if day_list[i+1] < day_list[i]:
+            month+=1
+        if month == 13:
+            month = 1
+        month_list.append(month)
+    except KeyError:
+        month_list.append(month)
+
+date_list = []
+for i in range(len(year_list)):
+    date_list.append(str(month_list[i]) + '/' + str(day_list[i]) + '/' + str(year_list[i]))
+    
+generation_type_df['Date'] = date_list
+index_list = generation_type_df[generation_type_df['day'] == 0].index
+generation_type_df = generation_type_df.drop(labels=index_list, axis = 0).reset_index(drop=True)
+
+sheet_list = []
+for key in generation_type_monthly_df.keys():
+    sheet_list.append(generation_type_monthly_df[key])
+monthly_generation_combined = pd.concat(sheet_list).reset_index(drop=True)
+
+year_list = list(monthly_generation_combined['YEAR'])
+month_list = list(monthly_generation_combined['MONTH'])
+
+date_list = []
+for i in range(len(month_list)):
+    date = str(int(month_list[i])) + '/1/' + str(int(year_list[i]))
+    date_list.append(date)
+
+monthly_generation_combined['Date'] = date_list
+
+monthly_generation_combined = monthly_generation_combined[monthly_generation_combined['TYPE OF PRODUCER'] == 'Total Electric Power Industry']
+monthly_generation_combined = monthly_generation_combined.reset_index(drop=True)
+
+
+monthly_generation_combined = monthly_generation_combined.drop(['MONTH',
+                                                                'YEAR',
+                                                                'TYPE OF PRODUCER'], axis=1)
+monthly_generation_combined['GENERATION (Megawatthours)'] = monthly_generation_combined['GENERATION (Megawatthours)'].fillna(monthly_generation_combined['GENERATION\n(Megawatthours)'])
+monthly_generation_combined = monthly_generation_combined.drop('GENERATION\n(Megawatthours)', axis = 1)
+monthly_generation_combined
+
+generation_pivot_df = monthly_generation_combined.pivot_table(index=['Date', 'STATE'], 
+                      columns=['ENERGY SOURCE'], values='GENERATION (Megawatthours)').fillna(0)
+state_to_iso_dict_energy = {'Nepool MH DA LMP Peak': [],
+                             'PJM WH Real Time Peak': [],
+                             'Indiana Hub RT Peak': [],
+                             'ERCOT North 345KV Peak': [],
+                             'Palo Verde Peak': [],
+                             'Mid C Peak': [],
+                             'SP15 EZ Gen DA LMP Peak': []}
+generation_pivot_df = generation_pivot_df.reset_index()
+generation_month_list = []
+for key in code_to_iso_dict.keys():
+    check_list = code_to_iso_dict[key]
+    temp_df = generation_pivot_df[generation_pivot_df['STATE'].isin(check_list)]
+    temp_df['Energy Hub'] = [key] * len(temp_df['STATE'])
+    temp_df = temp_df.reset_index(drop=True)
+    generation_month_list.append(temp_df)
+
+all_monthly_generation_3d = []
+for i in range(len(generation_month_list)):
+    temp_list = generation_month_list[i]['Energy Hub']
+    generation_month_list[i] = generation_month_list[i].groupby('Date', as_index=False).sum()
+    generation_month_list[i]['Energy Hub'] = temp_list
+    temp_df = full_date_df.merge(generation_month_list[i], on='Date', how='left')
+    all_monthly_generation_3d.append(temp_df.fillna(method='ffill'))
+
+#Combine generation and price data
+rearranged_region_price_data = [all_region_price_data[3], all_region_price_data[0], all_region_price_data[1],
+                               all_region_price_data[5], all_region_price_data[6], all_region_price_data[2],
+                               all_region_price_data[4]]
+final_data_set = []
+for i in range(len(all_monthly_generation_3d)):
+    temp_df1 = all_monthly_generation_3d[i]
+    temp_df2 = rearranged_region_price_data[i]
+    
+    temp_df = pd.concat([temp_df1,temp_df2], axis=1)
+    temp_df = temp_df.drop('Price Hub', axis=1)
+    temp_df = temp_df.dropna(axis=0)
+    final_data_set.append(temp_df)
+    
+#Aggregate all data into one large df rather than separate dfs for ISOs
+ratio_3d_df = []
+col_list = ['Coal', 'Geothermal', 'Hydroelectric Conventional',
+           'Natural Gas', 'Nuclear', 'Other', 'Other Biomass', 'Other Gases',
+           'Petroleum', 'Pumped Storage', 'Solar Thermal and Photovoltaic',
+           'Total', 'Wind', 'Wood and Wood Derived Fuels']
+for i in range(len(final_data_set)):
+    for column in col_list:
+        final_data_set[i][column] = final_data_set[i][column]/final_data_set[i]['Total']
+    ratio_3d_df.append(final_data_set[i])
+    
+for i in range(len(ratio_3d_df)):
+    ratio_3d_df[i].columns = ['Delete', 'Coal', 'Geothermal', 'Hydroelectric Conventional',
+       'Natural Gas', 'Nuclear', 'Other', 'Other Biomass', 'Other Gases',
+       'Petroleum', 'Pumped Storage', 'Solar Thermal and Photovoltaic',
+       'Total', 'Wind', 'Wood and Wood Derived Fuels', 'Energy Hub', 'Date',
+       'Real Price']
+    ratio_3d_df[i] = ratio_3d_df[i].drop('Delete',axis=1)
+    ratio_3d_df[i] = ratio_3d_df[i].reset_index(drop=True)
+
+
+#Split data into 5-year intervals
+first_quarter = []
+second_quarter = []
+third_quarter = []
+fourth_quarter = []
+for i in range(len(ratio_3d_df)):
+    first_quarter.append(ratio_3d_df[i][:2009])
+    second_quarter.append(ratio_3d_df[i][2008:2008*2])
+    third_quarter.append(ratio_3d_df[i][2008*2:2008*3])
+    fourth_quarter.append(ratio_3d_df[i][2008*3:-1])
+
+
+
+
+
+
+
+###Beginning of the regression/plots
+from sklearn.model_selection import train_test_split
+
+#Time vs Price graphs
+fig, axs = plt.subplots(4,2)
+xcounter=0
+ycounter=0
+for i in range(len(ratio_3d_df)):
+    features = pd.concat(first_quarter)
+    features = features.reset_index(drop=True)
+    x = np.arange(len(features['Real Price']))/365
+    y = features['Real Price']
+    title = features['Energy Hub'][0]
+    
+    axs[ycounter,xcounter].plot(x, y)
+    axs[ycounter,xcounter].set_title(title)
+    axs[ycounter,xcounter].set()
+    ycounter+=1
+    
+    if ycounter==4:
+        xcounter=1
+        ycounter=0
+
+
+for ax in axs.flat:       
+    ax.set(xlabel='Time', ylabel='Price')
+fig.tight_layout(h_pad=2)
+
+
+#Linear regression
+import plotly.express as px
+df_corr = ratio_3d_df[0].drop(['Date', 'Total', 'Energy Hub', 'Geothermal'], axis=1).corr() 
+fig = px.imshow(df_corr)
+fig.show()
+
+
+#Random forest for each time interval
+quarter = [first_quarter, second_quarter, third_quarter, fourth_quarter]
+for i in range(4):
+    features = pd.concat(quarter[i])
+    features = features.reset_index(drop=True)
+
+    labels = np.array(features['Real Price'])
+    features = features.drop(['Real Price', 'Date', 'Energy Hub','Total'], axis=1)
+    feature_list = list(features.columns)
+    features = np.array(features)
+
+    from sklearn.model_selection import train_test_split
+
+    train_features, test_features, train_labels, test_labels = train_test_split(features, labels, test_size = 0.25, random_state = 42)
+    print('Training Features Shape:', train_features.shape)
+    print('Training Labels Shape:', train_labels.shape)
+    print('Testing Features Shape:', test_features.shape)
+    print('Testing Labels Shape:', test_labels.shape)
+
+    # Import the model we are using
+    from sklearn.ensemble import RandomForestRegressor
+    # Instantiate model with 1000 decision trees
+    rf = RandomForestRegressor(n_estimators = 100, 
+                               random_state = 42)
+    # Train the model on training data
+    rf.fit(train_features, train_labels)
+
+    # Use the forest's predict method on the test data
+    predictions = rf.predict(test_features)
+    # Calculate the absolute errors
+    errors = abs(predictions - test_labels)
+    # Print out the mean absolute error (mae)
+    print('Mean Absolute Error:', round(np.mean(errors), 2), 'cents')
+    
+    cod = 1 - sum((test_labels-predictions)**2)/sum((test_labels-np.mean(test_labels))**2)
+    print(cod)
+    
+    # Get numerical feature importances
+    importances = list(rf.feature_importances_)
+    # List of tuples with variable and importance
+    feature_importances = [(feature, round(importance, 2)) for feature, importance in zip(feature_list, importances)]
+    # Sort the feature importances by most important first
+    feature_importances = sorted(feature_importances, key = lambda x: x[1], reverse = True)
+    # Print out the feature and importances 
+    [print('Variable: {:20} Importance: {}'.format(*pair)) for pair in feature_importances];
+    
+    %matplotlib inline
+    # Set the style
+    plt.style.use('fivethirtyeight')
+    # list of x locations for plotting
+    x_values = list(range(len(importances)))
+    # Make a bar chart
+    plt.barh(x_values, importances)
+    # Tick labels for x axis
+    plt.yticks(x_values, feature_list)
+    # Axis labels and title
+    plt.xlabel('Importance'); plt.ylabel('Variable'); plt.title('Variable Importances');
+    
+    
+#XGBoost model
+
+import pandas as pd
+import xgboost as xgb
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_absolute_error
+from sklearn.metrics import accuracy_score
+
+
+for i in range(4):
+    features = pd.concat(quarter[i])
+    features = features.reset_index(drop=True)
+
+    labels = np.array(features['Real Price'])
+    features = features.drop(['Real Price', 'Date', 'Energy Hub','Total'], axis=1)
+    feature_list = list(features.columns)
+    features = np.array(features)
+
+    X_train, X_test, y_train, y_test = train_test_split(features, labels, test_size = 0.25, random_state = 42)
+    
+    regressor = xgb.XGBRegressor(
+        n_estimators=100,
+        reg_lambda=1,
+        gamma=0,
+        max_depth=3,
+        learning_rate=0.1
+    )
+
+    regressor.fit(X_train, y_train)
+    print(pd.DataFrame(regressor.feature_importances_.reshape(1, -1), columns = feature_list))
+    importance_df = pd.DataFrame(regressor.feature_importances_.reshape(1, -1), columns = feature_list)
+    importances = []
+    for column in importance_df.columns:
+        importances.append(importance_df[column][0])
+    print(importances)
+
+    x_values = list(range(len(importance_df.columns)))
+    # Make a bar chart
+    plt.barh(x_values, importances)
+    # Tick labels for x axis
+    plt.yticks(x_values, feature_list)
+    # Axis labels and title
+    plt.xlabel('Importance'); plt.ylabel('Variable'); plt.title('Variable Importances');
+
+    
+    y_pred = regressor.predict(X_test)
+    print(mean_absolute_error(y_test, y_pred))
+        
+    errors = abs(y_pred-y_test)
+    print(regressor.score(X_train,y_train)*100)
+    mape = 100 * (errors[y_test!=0] / y_test[y_test!=0])
+    accuracy = 100 - np.mean(mape)
+    print('Accuracy:' + str(accuracy))
+    cod = 1 - sum((y_test-y_pred)**2)/sum((y_test-np.mean(y_test))**2)
+    print(cod)
+    
+    importances = []
+    for column in importance_df.columns:
+        importances.append(importance_df[column][0])
+    print(importances)
+
+    x_values = list(range(len(importance_df.columns)))
+    # Make a bar chart
+    plt.barh(x_values, importances)
+    # Tick labels for x axis
+    plt.yticks(x_values, feature_list)
+    # Axis labels and title
+    plt.xlabel('Importance'); plt.ylabel('Variable'); plt.title('Variable Importances');
+
+#This was repeated for SP15, California's ISO
+
+#RF Model
+features = ratio_3d_df[4]
+features = features.reset_index(drop=True)
+
+labels = np.array(features['Real Price'])
+features = features.drop(['Real Price', 'Date', 'Energy Hub','Total'], axis=1)
+feature_list = list(features.columns)
+features = np.array(features)
+
+from sklearn.model_selection import train_test_split
+
+train_features, test_features, train_labels, test_labels = train_test_split(features, labels, test_size = 0.25, random_state = 42)
+print('Training Features Shape:', train_features.shape)
+print('Training Labels Shape:', train_labels.shape)
+print('Testing Features Shape:', test_features.shape)
+print('Testing Labels Shape:', test_labels.shape)
+
+# Import the model we are using
+from sklearn.ensemble import RandomForestRegressor
+# Instantiate model with 1000 decision trees
+rf = RandomForestRegressor(n_estimators = 100, 
+                           random_state = 42)
+# Train the model on training data
+rf.fit(train_features, train_labels)
+
+# Use the forest's predict method on the test data
+predictions = rf.predict(test_features)
+# Calculate the absolute errors
+errors = abs(predictions - test_labels)
+# Print out the mean absolute error (mae)
+print('Mean Absolute Error:', round(np.mean(errors), 2), 'cents')
+
+cod = 1 - sum((test_labels-predictions)**2)/sum((test_labels-np.mean(test_labels))**2)
+print(cod)
+
+
+
+
+#XGBoost
+features = ratio_3d_df[4] #SP15 index
+features = features.reset_index(drop=True)
+
+labels = np.array(features['Real Price'])
+features = features.drop(['Real Price', 'Date', 'Energy Hub','Total'], axis=1)
+feature_list = list(features.columns)
+features = np.array(features)
+
+X_train, X_test, y_train, y_test = train_test_split(features, labels, test_size = 0.25, random_state = 42)
+
+regressor = xgb.XGBRegressor(
+    n_estimators=100,
+    reg_lambda=1,
+    gamma=0,
+    max_depth=3,
+    learning_rate=0.1
+)
+
+regressor.fit(X_train, y_train)
+print(pd.DataFrame(regressor.feature_importances_.reshape(1, -1), columns = feature_list))
+importance_df = pd.DataFrame(regressor.feature_importances_.reshape(1, -1), columns = feature_list)
+importances = []
+for column in importance_df.columns:
+    importances.append(importance_df[column][0])
+print(importances)
+
+x_values = list(range(len(importance_df.columns)))
+# Make a bar chart
+plt.barh(x_values, importances)
+# Tick labels for x axis
+plt.yticks(x_values, feature_list)
+# Axis labels and title
+plt.xlabel('Importance'); plt.ylabel('Variable'); plt.title('Variable Importances');
+
+
+y_pred = regressor.predict(X_test)
+print(mean_absolute_error(y_test, y_pred))
+
+errors = abs(y_pred-y_test)
+print(regressor.score(X_train,y_train)*100)
+mape = 100 * (errors[y_test!=0] / y_test[y_test!=0])
+accuracy = 100 - np.mean(mape)
+print('Accuracy:' + str(accuracy))
+cod = 1 - sum((y_test-y_pred)**2)/sum((y_test-np.mean(y_test))**2)
+print(cod)
+
